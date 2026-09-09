@@ -42,8 +42,6 @@ def ask(prompt, temperature=0.3):
 # 模块 1：读取文档
 # 需求：写 load_documents()，读取 KNOWLEDGE_DIR 下所有 .txt/.md 文件，
 #       返回 [(文件名, 全文内容), ...]
-# 提示：glob.glob(os.path.join(KNOWLEDGE_DIR, "*.txt")) 找文件
-#       open(file, encoding="utf-8").read() 读内容
 # ============================================================
 def load_documents():
     documents = []
@@ -60,8 +58,6 @@ def load_documents():
 
 # ============================================================
 # 模块 2：文档切块
-# 需求：写 chunk_text(text, chunk_size)，按字数切块返回列表
-#       （第二周写过，凭记忆写）
 # ============================================================
 def chunk_text(text, chunk_size=CHUNK_SIZE):
     # 你的代码写在这里 ↓
@@ -78,7 +74,6 @@ def chunk_text(text, chunk_size=CHUNK_SIZE):
 #      - 每块的 id 用 "doc序号_块序号"
 #      - 每块附带 metadata={"source": 文件名}（以后能追溯来源）
 #   5. 打印存入多少块
-# 提示：add(documents=[...], ids=[...], metadatas=[...])
 # ============================================================
 def build_collection(documents):
     ef = embedding_functions.OllamaEmbeddingFunction(
