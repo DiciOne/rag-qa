@@ -129,6 +129,10 @@ def query(question, collection):
     # 你的代码写在这里 ↓
     results = collection.query(query_texts=[question], n_results=3)
     chunks = results["documents"][0]
+
+    if not chunks:
+        return "知识库中没有找到相关信息。"
+    
     sources = results["metadatas"][0]   # 每个元素是 {"source": "文件名"} 字典
     # 正确做法：用 src["source"] 取出文件名，而不是把整个字典塞进去
     context = "\n".join(
@@ -139,7 +143,9 @@ def query(question, collection):
         "如果材料中没有相关信息，就说'知识库中没有找到相关信息'。\n"
         "材料：\n" + context + "\n问题：" + question
     )
-    return ask(prompt)
+    source_names_raw = [src['source'] for src in sources]
+    source_names = list(set(source_names_raw))
+    return ask(prompt) , source_names
 
 
 # ============================================================
@@ -173,8 +179,9 @@ def main():
             break
         if not q:
             continue
-        answer = query(q, collection)
+        answer , sources= query(q, collection)
         print(f"回答: {answer}\n")
+        print(f"来源:{','.join(sources)}\n")
 
 
 if __name__ == "__main__":
