@@ -45,7 +45,6 @@ def ask(prompt, temperature=0.3):
 # ============================================================
 def load_documents():
     documents = []
-    # 你的代码写在这里 ↓
     all_files = glob.glob(os.path.join(KNOWLEDGE_DIR, "*.*"))
     for fp in all_files:
         if fp.endswith((".txt", ".md")):
@@ -60,7 +59,6 @@ def load_documents():
 # 模块 2：文档切块
 # ============================================================
 def chunk_text(text, chunk_size=CHUNK_SIZE):
-    # 你的代码写在这里 ↓
     return [text[i:i+chunk_size] for i in range(0 , len(text) , chunk_size)]
 
 
@@ -88,7 +86,6 @@ def build_collection(documents):
         pass
     collection = client.create_collection(COLLECTION_NAME, embedding_function=ef)
 
-    # 你的代码写在这里 ↓
     all_chunks = []
     all_ids = []
     all_metas = []
@@ -121,7 +118,6 @@ def build_collection(documents):
 #   4. ask() 返回回答
 # ============================================================
 def query(question, collection):
-    # 你的代码写在这里 ↓
     results = collection.query(query_texts=[question], n_results=3)
     chunks = results["documents"][0]
 
@@ -129,7 +125,7 @@ def query(question, collection):
         return "知识库中没有找到相关信息。"
     
     sources = results["metadatas"][0]   # 每个元素是 {"source": "文件名"} 字典
-    # 正确做法：用 src["source"] 取出文件名，而不是把整个字典塞进去
+
     context = "\n".join(
         f"[来自{src['source']}]\n{chunk}" for chunk, src in zip(chunks, sources)
     )
