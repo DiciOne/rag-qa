@@ -1,0 +1,23 @@
+# Python 基础速记
+
+## 列表（list）
+- 用方括号 [] 定义，如 fruits = ["苹果", "香蕉"]
+- append() 追加元素，remove() 删除元素
+- 列表推导式：[x*x for x in range(5)] 生成平方列表
+- 切片：list[1:3] 取第2到第3个元素
+
+## 字典（dict）
+- 用花括号 {} 定义，键值对形式
+- 取值：dict["key"] 或 dict.get("key")
+- dict.get() 在键不存在时返回 None，不会报错
+- items() 可以遍历键值对
+
+## 函数
+- def 定义函数，return 返回值
+- 参数可以有默认值，如 def greet(name="小明")
+- *args 接收任意数量位置参数，**kwargs 接收关键字参数
+
+## 类和对象
+- class 定义类，__init__ 是构造函数
+- self 代表实例本身
+- 方法第一个参数必须是 self
