@@ -1,0 +1,9 @@
+# 忽略 Chroma 向量数据库（运行时生成，不需要提交）
+chroma_db/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
