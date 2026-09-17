@@ -13,9 +13,12 @@
 """
 
 import os
+import sys
 import glob
 import chromadb
 from chromadb.utils import embedding_functions
+
+import doc_loader          # 文档加载与清洗模块（支持 txt / md / pdf）
 
 # ---------- 配置 ----------
 KNOWLEDGE_DIR = os.path.join(os.path.dirname(__file__), "knowledge")  # 文档目录
@@ -44,14 +47,18 @@ def ask(prompt, temperature=0.3):
 #       返回 [(文件名, 全文内容), ...]
 # ============================================================
 def load_documents():
+    """读取 knowledge/ 下所有支持的文档（txt / md / pdf），返回 [(文件名, 文本), ...]"""
     documents = []
-    all_files = glob.glob(os.path.join(KNOWLEDGE_DIR, "*.*"))
+    all_files = sorted(glob.glob(os.path.join(KNOWLEDGE_DIR, "*.*")))
     for fp in all_files:
-        if fp.endswith((".txt", ".md")):
-            with open(fp, "r" , encoding="utf-8") as f:
-                text = f.read()
-                name = os.path.basename(fp)
-                documents.append((name , text))
+        if not fp.lower().endswith(doc_loader.supported_extensions()):
+            continue
+        name, text, meta = doc_loader.load_document(fp)
+        print(f"  📄 {name}（{meta['type']}，{meta['pages']} 页，{len(text)} 字符）")
+        if len(text.strip()) < 10:
+            print("     ⚠️  内容过少，跳过")
+            continue
+        documents.append((name, text))
     return documents
 
 
@@ -120,32 +127,36 @@ def build_collection(documents):
 def query(question, collection):
     results = collection.query(query_texts=[question], n_results=3)
     chunks = results["documents"][0]
+    distances = results["distances"][0]
 
-    if not chunks:
-        return "知识库中没有找到相关信息。"
-    
-    sources = results["metadatas"][0]   # 每个元素是 {"source": "文件名"} 字典
+    relevant = [(chunk , src , dist) for chunk , src , dist in zip(chunks,results["metadatas"][0],distances) if dist < 0.5]
+
+    if not relevant:
+        return {"answer":"知识库中没有找到相关信息。","sources":[]}
 
     context = "\n".join(
-        f"[来自{src['source']}]\n{chunk}" for chunk, src in zip(chunks, sources)
-    )
+        f"[来自{src['source']}]\n{chunk}" for chunk, src,_ in relevant)
+    
     prompt = (
         "你是一个知识库问答助手。请只基于下面的材料回答问题，"
         "如果材料中没有相关信息，就说'知识库中没有找到相关信息'。\n"
         "材料：\n" + context + "\n问题：" + question
     )
-    source_names_raw = [src['source'] for src in sources]
-    source_names = list(set(source_names_raw))
-    return ask(prompt) , source_names
-
+    answer = ask(prompt)
+    source_names = list(set(src['source'] for _,src,_ in relevant))
+  
+    return {
+        "answer": answer,
+        "sources": source_names,
+    }
 
 # ============================================================
 # 主程序
 # ============================================================
 def main():
-    # 检查库是否已存在
-    import shutil
-    db_exists = os.path.exists(CHROMA_DIR) and os.path.exists(
+    # 检查库是否已存在（--rebuild 强制重建）
+    force_rebuild = "--rebuild" in sys.argv
+    db_exists = (not force_rebuild) and os.path.exists(CHROMA_DIR) and os.path.exists(
         os.path.join(CHROMA_DIR, "chroma.sqlite3"))
 
     ef = embedding_functions.OllamaEmbeddingFunction(
@@ -170,9 +181,9 @@ def main():
             break
         if not q:
             continue
-        answer , sources= query(q, collection)
-        print(f"回答: {answer}\n")
-        print(f"来源:{','.join(sources)}\n")
+        result = query(q, collection)
+        print(f"回答: {result['answer']}\n")
+        print(f"来源:{','.join(result['sources'])}\n")
 
 
 if __name__ == "__main__":
