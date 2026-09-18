@@ -78,30 +78,4 @@ class HybridRetriever:
         for chunk , score in sorted_scores[:k]:
             result.append((chunk,source_of[chunk] , score))
         return result
-        """混合检索主入口，返回 [(块内容, 来源, RRF得分), ...]
-
-        ===== 你的代码写在这里 =====
-        步骤：
-          1. 两路召回：
-               vec = self.vector_search(question, n_candidates)
-               kw  = self.keyword_search(question, n_candidates)
-
-          2. RRF 打分（用块内容 chunk 作为 key 累加两路得分）：
-               对 vec 里第 rank 个结果（rank 从 1 开始）：scores[chunk] += 1 / (60 + rank)
-               对 kw  里第 rank 个结果：                scores[chunk] += 1 / (60 + rank)
-               同时记住每个 chunk 对应的来源（source）
-
-          3. 按总分降序排序，取前 k 个，返回 [(chunk, source, 总分), ...]
-
-          4. 拒答规则（重要）：
-               如果 向量最优距离（vec[0][2]）> self.max_distance
-               且 关键词最高分（kw[0][2]）== 0
-               → 说明两路都没找到相关内容，返回 []
-
-        提示：
-          - 打分可以用字典：scores = {}；scores[chunk] = scores.get(chunk, 0) + 1/(60+rank)
-          - 来源也要用字典记下来：source_of[chunk] = source
-          - 排序：sorted(scores.items(), key=lambda x: x[1], reverse=True)
-          - 注意返回值的类型要和"无结果"时一致（都是列表）
-        """
-
+  
