@@ -25,6 +25,7 @@ EMBED_MODEL = "bge-m3"
 MAX_DISTANCE = 0.5      # 相似度阈值
 K = 3                   # 取前 K 条
 USE_HYBRID = True       # True = 混合检索（向量+BM25）；False = 纯向量（用于对比）
+USE_RERANK = False      # 实测：3B 模型做重排序反而让命中率从 1.00 降到 0.43，已弃用（见 README 实验记录）
 
 # ---------- 评测集 ----------
 EVAL_SET = [
@@ -140,7 +141,14 @@ if __name__ == "__main__":
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     col = client.get_collection(COLLECTION_NAME, embedding_function=ef)
 
-    if USE_HYBRID:
+    if USE_RERANK:
+        from hybrid_retriever import HybridRetriever
+        from reranker import LLMReranker
+        retriever = HybridRetriever(col, max_distance=MAX_DISTANCE)
+        reranker = LLMReranker(retriever)
+        search_fn = lambda q: reranker.search(q, k=K)
+        mode = "混合检索 + LLM 重排序（两阶段）"
+    elif USE_HYBRID:
         from hybrid_retriever import HybridRetriever
         retriever = HybridRetriever(col, max_distance=MAX_DISTANCE)
         search_fn = lambda q: retriever.search(q, k=K)

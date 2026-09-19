@@ -51,6 +51,10 @@ class HybridRetriever:
 
     # ---------- 融合 ----------
     def search(self, question, k=3, n_candidates=10):
+        """混合检索：向量 + BM25 两路召回 → RRF 融合 → 返回 [(块内容, 来源, 得分), ...]
+
+        拒答规则：向量最优距离超过阈值 且 BM25 最高分为 0（两路都没强信号）→ 返回 []。
+        """
         vec = self.vector_search(question , n_candidates)
         kw = self.keyword_search(question , n_candidates)
 

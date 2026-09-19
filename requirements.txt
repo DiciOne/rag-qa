@@ -3,3 +3,5 @@ requests
 fastapi
 uvicorn
 pypdf
+jieba
+rank_bm25
