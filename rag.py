@@ -19,6 +19,7 @@ import chromadb
 from chromadb.utils import embedding_functions
 
 import doc_loader          # 文档加载与清洗模块（支持 txt / md / pdf）
+from qa_core import QAEngine   # 公共问答核心（混合检索 + 生成）
 
 # ---------- 配置 ----------
 KNOWLEDGE_DIR = os.path.join(os.path.dirname(__file__), "knowledge")  # 文档目录
@@ -26,19 +27,6 @@ CHROMA_DIR = os.path.join(os.path.dirname(__file__), "chroma_db")      # 向量�
 CHUNK_SIZE = 100        # 每块多少字
 COLLECTION_NAME = "knowledge"
 EMBED_MODEL = "bge-m3"  # 嵌入模型
-CHAT_MODEL = "qwen2.5:3b"
-
-# ---------- 工具：调用大模型 ----------
-import requests
-
-def ask(prompt, temperature=0.3):
-    resp = requests.post("http://localhost:11434/api/chat", json={
-        "model": CHAT_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False,
-        "options": {"temperature": temperature},
-    })
-    return resp.json()["message"]["content"]
 
 
 # ============================================================
@@ -124,31 +112,10 @@ def build_collection(documents):
 #   3. 拼提示词：基于材料回答，不知道就说不知道
 #   4. ask() 返回回答
 # ============================================================
-def query(question, collection):
-    results = collection.query(query_texts=[question], n_results=3)
-    chunks = results["documents"][0]
-    distances = results["distances"][0]
-
-    relevant = [(chunk , src , dist) for chunk , src , dist in zip(chunks,results["metadatas"][0],distances) if dist < 0.5]
-
-    if not relevant:
-        return {"answer":"知识库中没有找到相关信息。","sources":[]}
-
-    context = "\n".join(
-        f"[来自{src['source']}]\n{chunk}" for chunk, src,_ in relevant)
-    
-    prompt = (
-        "你是一个知识库问答助手。请只基于下面的材料回答问题，"
-        "如果材料中没有相关信息，就说'知识库中没有找到相关信息'。\n"
-        "材料：\n" + context + "\n问题：" + question
-    )
-    answer = ask(prompt)
-    source_names = list(set(src['source'] for _,src,_ in relevant))
-  
-    return {
-        "answer": answer,
-        "sources": source_names,
-    }
+def query(question, engine):
+    """提问并返回 (回答, 来源列表)。检索与生成逻辑在 qa_core.QAEngine 中。"""
+    result = engine.answer(question)
+    return result["answer"], result["sources"]
 
 # ============================================================
 # 主程序
@@ -174,16 +141,18 @@ def main():
         print(f"   读取到 {len(documents)} 个文档")
         collection = build_collection(documents)
 
-    print("✅ 知识库就绪，开始问答（输入 exit 退出）\n")
+    engine = QAEngine(collection)      # 混合检索 + 生成，统一由 qa_core 提供
+
+    print("✅ 知识库就绪（混合检索模式），开始问答（输入 exit 退出）\n")
     while True:
         q = input("问题: ").strip()
         if q in ("exit", "退出", "quit"):
             break
         if not q:
             continue
-        result = query(q, collection)
-        print(f"回答: {result['answer']}\n")
-        print(f"来源:{','.join(result['sources'])}\n")
+        answer, sources = query(q, engine)
+        print(f"回答: {answer}\n")
+        print(f"来源:{','.join(sources)}\n")
 
 
 if __name__ == "__main__":
