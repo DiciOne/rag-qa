@@ -106,11 +106,8 @@ def build_collection(documents):
 
 # ============================================================
 # 模块 4：问答
-# 需求：写 query(question, collection)：
-#   1. collection.query(query_texts=[question], n_results=3) 检索
-#   2. 把命中的块拼成"材料"（带上来源）
-#   3. 拼提示词：基于材料回答，不知道就说不知道
-#   4. ask() 返回回答
+# 检索与生成已抽取到 qa_core.QAEngine（命令行 / 接口 / 调试共用同一实现），
+# 这里只做转发：engine.answer(question) -> (回答, 来源列表)
 # ============================================================
 def query(question, engine):
     """提问并返回 (回答, 来源列表)。检索与生成逻辑在 qa_core.QAEngine 中。"""

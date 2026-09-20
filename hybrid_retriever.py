@@ -55,17 +55,17 @@ class HybridRetriever:
 
         拒答规则：向量最优距离超过阈值 且 BM25 最高分为 0（两路都没强信号）→ 返回 []。
         """
-        vec = self.vector_search(question , n_candidates)
-        kw = self.keyword_search(question , n_candidates)
+        vec = self.vector_search(question, n_candidates)
+        kw = self.keyword_search(question, n_candidates)
 
-        if not vec and not kw:
+        # 两路都是"总是返回 n 条"（不做阈值过滤），
+        # 所以列表为空只可能是库为空，而不是"没检索到"
+        if not vec:
             return []
-        if vec and kw:
-            if vec[0][2] > self.max_distance and kw[0][2] == 0:
-                return []
-        elif vec and not kw:
-            if vec[0][2] > self.max_distance:
-                return []
+
+        # 拒答：向量最优也超过阈值，且 BM25 一个词都没匹配上（两路都没强信号）
+        if kw and vec[0][2] > self.max_distance and kw[0][2] == 0:
+            return []
 
         scores = {}
         source_of = {}
