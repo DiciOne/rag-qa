@@ -45,9 +45,16 @@ def extract_pdf_pages(path):
 # ============================================================
 # 二、文本清洗
 # ============================================================
+# 只归一化"页码"这类模式，**不要**把所有数字都替换掉。
+# 踩坑：早期版本用 re.sub(r"\d+", "#", line) 归一化全部数字，结果
+#      "工作电压：DC 24V" 和 "工作电压：DC 12V" 变成同一个 key，
+#      被误判为"重复行"而整行删除（真实手册的参数表会被成片删掉）。
+PAGE_NUM_PAT = re.compile(r"第\s*\d+\s*页|Page\s*\d+|^\s*\d+\s*$", re.IGNORECASE)
+
+
 def normalize(line):
-    """把数字统一替换成 #，用于识别"带页码的页脚"这类重复行"""
-    return re.sub(r"\d+", "#", line)
+    """归一化页码类内容，用于识别"带页码的页脚"这类重复行"""
+    return PAGE_NUM_PAT.sub("#", line)
 
 
 def remove_repeated_lines(pages):
@@ -55,6 +62,8 @@ def remove_repeated_lines(pages):
     line_page_count = {}
     for page in pages:
         for line in set(page.split("\n")):          # set：同一页内重复只算一次
+            if not line.strip():                    # 空行不参与统计
+                continue
             key = normalize(line)
             line_page_count[key] = line_page_count.get(key, 0) + 1
 
@@ -64,8 +73,9 @@ def remove_repeated_lines(pages):
     for page in pages:
         kept_lines = []
         for line in page.split("\n"):
-            if normalize(line) not in repeated_keys:
-                kept_lines.append(line)
+            if line.strip() and normalize(line) in repeated_keys:
+                continue                            # 页眉页脚：丢弃
+            kept_lines.append(line)
         cleaned_pages.append("\n".join(kept_lines))
     return cleaned_pages
 
