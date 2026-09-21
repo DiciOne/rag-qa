@@ -1,4 +1,5 @@
 chromadb
+ollama
 requests
 fastapi
 uvicorn
