@@ -1,0 +1,19 @@
+# Docker 构建时排除的文件（配合 Dockerfile 里的 COPY . .）
+# 作用：既保证所有 .py 模块都被拷进去，又不把运行时产物塞进镜像
+
+# 运行时生成的数据（不放进镜像）
+chroma_db/
+*.db
+
+# Python 缓存
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 版本控制与编辑器
+.git/
+.gitignore
+.vscode/
+
+# 文档（镜像里不需要 README 占空间；如需保留可删掉这行）
+README.md

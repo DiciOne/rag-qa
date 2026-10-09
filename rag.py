@@ -19,7 +19,7 @@ import chromadb
 from chromadb.utils import embedding_functions
 
 import doc_loader          # 文档加载与清洗模块（支持 txt / md / pdf）
-from qa_core import QAEngine   # 公共问答核心（混合检索 + 生成）
+from qa_core import QAEngine, ModelServiceError   # 公共问答核心（混合检索 + 生成）
 
 # ---------- 配置 ----------
 KNOWLEDGE_DIR = os.path.join(os.path.dirname(__file__), "knowledge")  # 文档目录
@@ -147,7 +147,12 @@ def main():
             break
         if not q:
             continue
-        answer, sources = query(q, engine)
+        try:
+            answer, sources = query(q, engine)
+        except ModelServiceError as e:
+            # 模型服务挂了不能让整个程序退出，提示后继续等下一个问题
+            print(f"⚠️  {e}\n")
+            continue
         print(f"回答: {answer}\n")
         print(f"来源:{','.join(sources)}\n")
 

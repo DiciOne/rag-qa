@@ -126,15 +126,22 @@ python test_qa_core.py      # 10 条用例，覆盖拒答判定（纯函数，�
 ## 🐳 Docker 部署
 
 ```bash
-# 构建镜像
+# 构建镜像（COPY . . + .dockerignore，所有模块都会进镜像）
 docker build -t rag-qa .
 
-# 运行容器
-docker run -p 8000:8000 -v $(pwd)/chroma_db:/app/chroma_db rag-qa
+# 运行容器：把模型地址指向宿主机（容器内的 localhost 是容器自己）
+docker run -p 8000:8000 \
+  -e OLLAMA_URL=http://host.docker.internal:11434/api/chat \
+  -v $(pwd)/chroma_db:/app/chroma_db \
+  rag-qa
 ```
 
-> **注意**：容器内的 `localhost` 指向容器自身，若 Ollama 运行在宿主机，需使用
-> `--network host`（Linux）或在代码中将 `localhost` 改为宿主机 IP（Windows/Mac 用 `host.docker.internal`）。
+> **两个必须注意的点**：
+> 1. **模型地址用环境变量传**：容器内的 `localhost` 指向容器自身，连不到宿主机的 Ollama。
+>    Windows/Mac 用 `host.docker.internal`，Linux 也可以用 `--network host`。
+> 2. **`--host 0.0.0.0`**：启动命令里必须写 `0.0.0.0`，写 `127.0.0.1` 会导致容器外访问不到。
+>
+> ⚠️ 本项目的 Dockerfile **未在真实 Docker 环境中实测过**（开发机未安装 Docker）。
 
 ## 🧠 工作原理
 
@@ -277,6 +284,49 @@ PDF 直接用 `pypdf` 提取出来的文本**很脏**，必须清洗才能入库
 两个入口（命令行 / 接口）各自实现了一遍检索逻辑，导致"优化只改了一处"（后来重构为
 共用的 `qa_core.py` 解决）。
 
+### 7. 模型服务的容错（超时 / 状态码 / 503）
+
+**问题**：最初的模型调用是这样的——
+```python
+resp = requests.post(url, json=payload)          # ❌ 没有超时
+return resp.json()["message"]["content"]         # ❌ 没检查状态码
+```
+两个后果：
+1. **没有 timeout**：Ollama 卡住时请求会**永久挂起**，占住线程不释放
+2. **不检查状态码**：服务返回错误时，会在 `resp.json()` 抛一个和真实原因无关的解析异常
+
+**解决**：
+- 请求加 `timeout=120`
+- 显式检查 `status_code != 200`，把响应体前 200 字符带进错误信息
+- 定义 `ModelServiceError`，区分"连接失败 / 超时 / 状态错误 / 返回格式异常"四种情况
+- 接口层用 `@app.exception_handler` 把它映射成 **HTTP 503**（Service Unavailable）
+  —— 而不是 500 崩溃，监控系统能识别并告警
+- 命令行版捕获后提示并**继续等下一个问题**，不让程序退出
+
+**验证方式**：把 `OLLAMA_URL` 指向一个不存在的端口启动服务，请求 `/ask` 应返回：
+```json
+{"error": "模型服务暂不可用", "detail": "无法连接模型服务，请确认 Ollama 已启动"}
+```
+（模型地址支持用环境变量 `OLLAMA_URL` 覆盖——这也解决了"容器里连不到宿主机 Ollama"的问题。）
+
+### 8. Dockerfile 漏拷模块（容器启动即崩）
+
+**问题**：Dockerfile 里逐个 `COPY api.py .` / `COPY rag.py .`，**漏掉了
+`qa_core.py`、`hybrid_retriever.py`、`doc_loader.py`** —— 容器启动时 `import qa_core`
+直接 `ModuleNotFoundError`，服务根本起不来。
+
+**根因**：**"逐个列举文件"这种写法，新增模块时必然会忘**（这类问题叫"清单不同步"）。
+
+**解决**：
+```dockerfile
+COPY . .          # 一次性拷全部，从根上消除"忘记加文件"
+```
+配合 `.dockerignore` 排除不需要进镜像的东西（`chroma_db/`、`*.db`、`__pycache__/`、
+`.git/`、`README.md`）。
+
+**教训**：**能用"整目录拷贝 + 排除清单"就不要用"逐个列举"**——前者漏了只是多拷，
+后者漏了直接崩。
+
 ## 📁 目录结构
 
 ```
@@ -287,11 +337,13 @@ rag_qa/
 ├── hybrid_retriever.py   # 混合检索（向量 + BM25，RRF 融合）
 ├── reranker.py           # LLM 重排序（实验性，实测效果不佳，默认关闭）
 ├── doc_loader.py         # 文档加载与清洗（txt / md / pdf）
+├── doc_store.py          # 文档元数据管理（SQLite：文档列表 / 统计 / 删除）
 ├── eval_retrieval.py     # 检索效果评测（17 条评测集 + 三指标）
 ├── test_cleaning.py      # 文档清洗回归测试（9 条用例）
 ├── test_qa_core.py       # 拒答判定回归测试（10 条用例，纯函数）
 ├── try_qa.py             # 快速试问脚本（调试用）
 ├── Dockerfile            # 容器化构建文件
+├── .dockerignore         # Docker 构建排除清单
 ├── requirements.txt      # 依赖清单
 ├── knowledge/            # 知识文档（txt / md / pdf）
 ├── chroma_db/            # 向量数据库（运行时生成，已 gitignore）
@@ -313,6 +365,7 @@ rag_qa/
 - Word（.docx）文档解析，以及表格结构化提取
 - 优化分块策略（当前按固定字数切，"数字量输入：14 点"和"数字量输出：10 点"被切散）
 - 支持多轮对话（带历史上下文的追问）以及用户反馈闭环
+- `doc_store.py` 尚未接入 `rag.py`（建库时写入元数据、命令行支持列出/删除文档）
 
 ## ✅ 已完成的关键改进
 
@@ -322,4 +375,8 @@ rag_qa/
 - 混合检索（向量 + BM25 + RRF）：命中率 0.86 → 1.00
 - 检索效果评测集（17 条）与量化指标
 - 抽取公共核心模块 `qa_core.py`，命令行 / 接口 / 评测共用同一实现
+- 文档元数据管理模块 `doc_store.py`（SQLite：列表 / 统计 / 级联删除）
+- **模型服务容错**：请求超时 + 状态码检查 + `ModelServiceError` → 接口返回 503
+- **Docker 构建修正**：`COPY . .` + `.dockerignore`，消除"漏拷模块"问题
+- 回归测试两套（PDF 清洗 9 条 + 拒答判定 10 条），共 19 条用例
         

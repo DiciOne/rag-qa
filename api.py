@@ -12,10 +12,11 @@ RAG 知识库问答系统 - FastAPI 接口版
 import os
 import chromadb
 from chromadb.utils import embedding_functions
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from qa_core import QAEngine        # 公共问答核心（混合检索 + 生成）
+from qa_core import QAEngine, ModelServiceError   # 公共问答核心（混合检索 + 生成）
 
 # ---------- 配置 ----------
 BASE_DIR = os.path.dirname(__file__)
@@ -35,6 +36,15 @@ print("✅ 知识库加载完成（混合检索模式）")
 
 # ---------- FastAPI 应用 ----------
 app = FastAPI(title="RAG 知识库问答系统", version="1.0.0")
+
+
+@app.exception_handler(ModelServiceError)
+def handle_model_error(request: Request, exc: ModelServiceError):
+    """模型服务不可用时返回 503，而不是 500 崩溃（部署时监控系统能识别）"""
+    return JSONResponse(
+        status_code=503,
+        content={"error": "模型服务暂不可用", "detail": str(exc)},
+    )
 
 
 # 定义请求体格式（POST 请求用）

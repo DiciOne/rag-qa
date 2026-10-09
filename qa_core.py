@@ -13,6 +13,7 @@
 命中率优于纯向量检索（见 README 的评测章节）。
 """
 
+import os
 import re
 
 import requests
@@ -21,9 +22,18 @@ from hybrid_retriever import HybridRetriever
 
 # ---------- 配置 ----------
 CHAT_MODEL = "qwen2.5:3b"
+# 模型服务地址：用环境变量可覆盖（部署时容器里要指向宿主机，例如
+#   OLLAMA_URL=http://host.docker.internal:11434/api/chat ）
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
+REQUEST_TIMEOUT = 120     # 秒。没有超时的话，模型卡住会把请求永久挂起
 MAX_DISTANCE = 0.5        # 相似度阈值（向量路粗过滤）
 TOP_K = 3                 # 最终返回的片段数
 NO_INFO_ANSWER = "知识库中没有找到相关信息。"
+
+
+class ModelServiceError(Exception):
+    """模型服务不可用（连接失败 / 超时 / 返回错误状态 / 返回格式异常）"""
+
 
 # 判"模型是不是在拒答"用的**完整话术**（提示词里已强制模型使用这个固定说法）。
 # 踩坑：早期用 ("没有找到", "没有相关", ...) 这种短词表匹配，结果把
@@ -43,14 +53,28 @@ PROMPT_TEMPLATE = (
 
 
 def ask(prompt, temperature=0.0):
-    """调用本地大模型"""
-    resp = requests.post("http://localhost:11434/api/chat", json={
-        "model": CHAT_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False,
-        "options": {"temperature": temperature},
-    })
-    return resp.json()["message"]["content"]
+    """调用本地大模型。失败时抛 ModelServiceError（附带可读原因）。"""
+    try:
+        resp = requests.post(OLLAMA_URL, json={
+            "model": CHAT_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "options": {"temperature": temperature},
+        }, timeout=REQUEST_TIMEOUT)
+    except requests.exceptions.Timeout:
+        raise ModelServiceError(f"模型服务响应超时（超过 {REQUEST_TIMEOUT} 秒）")
+    except requests.exceptions.ConnectionError:
+        raise ModelServiceError("无法连接模型服务，请确认 Ollama 已启动")
+
+    # 状态码检查：不做的话，出错时会抛一个看不懂的 JSON 解析异常
+    if resp.status_code != 200:
+        raise ModelServiceError(
+            f"模型服务返回错误状态 {resp.status_code}：{resp.text[:200]}")
+
+    try:
+        return resp.json()["message"]["content"]
+    except (ValueError, KeyError, TypeError) as e:
+        raise ModelServiceError(f"模型返回格式异常：{e}")
 
 
 def build_prompt(context, question):
