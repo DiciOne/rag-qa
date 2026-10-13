@@ -71,6 +71,12 @@ class DocStore:
     # ============================================================
     # 查询部分（★ 你来写 ★）
     # ============================================================
+    def reset(self):
+        """清空所有数据（重建知识库时调用，避免残留旧数据）"""
+        self.conn.execute("DELETE FROM chunks")
+        self.conn.execute("DELETE FROM documents")
+        self.conn.commit()
+
     def list_documents(self):
         """列出所有文档：名字、类型、块数、字符数、入库时间（按块数从多到少排序）
 

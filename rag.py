@@ -35,7 +35,11 @@ EMBED_MODEL = "bge-m3"  # 嵌入模型
 #       返回 [(文件名, 全文内容), ...]
 # ============================================================
 def load_documents():
-    """读取 knowledge/ 下所有支持的文档（txt / md / pdf），返回 [(文件名, 文本), ...]"""
+    """读取 knowledge/ 下所有支持的文档（txt / md / pdf）
+
+    返回 [(文件名, 文本, 元信息), ...]——元信息里带 type / pages，
+    后续写入 SQLite 做文档管理时要用。
+    """
     documents = []
     all_files = sorted(glob.glob(os.path.join(KNOWLEDGE_DIR, "*.*")))
     for fp in all_files:
@@ -46,7 +50,7 @@ def load_documents():
         if len(text.strip()) < 10:
             print("     ⚠️  内容过少，跳过")
             continue
-        documents.append((name, text))
+        documents.append((name, text, meta))
     return documents
 
 
@@ -84,7 +88,7 @@ def build_collection(documents):
     all_chunks = []
     all_ids = []
     all_metas = []
-    for doc_idx , (filename , content) in enumerate(documents):
+    for doc_idx , (filename , content , _meta) in enumerate(documents):
         chunks = chunk_text(content)
         for chunk_idx , chunk in enumerate(chunks):
             all_chunks.append(chunk)
@@ -95,13 +99,28 @@ def build_collection(documents):
         ids=all_ids,
         metadatas=all_metas
     )
-    # 思路：遍历 documents，对每个 (filename, content) 切块，
-    #       收集所有块、id、metadata，最后一次性 collection.add()
-    # id 示例："0_0", "0_1", "1_0"（第0个文档第0块）
-    # metadata 示例：{"source": "python笔记.txt"}
 
     print(f"✅ 建库完成，共存入 {collection.count()} 块")
     return collection
+
+
+def save_metadata(documents):
+    """把文档元数据与块同步写入 SQLite（供文档管理 / Agent 的工具使用）
+
+    两个存储各司其职：
+      向量库（Chroma）→ 语义检索
+      SQLite          → 业务元数据（文档列表、块数、统计）
+    """
+    from doc_store import DocStore
+
+    store = DocStore()
+    store.reset()                      # 重建时先清空，避免残留旧文档
+    for name, text, meta in documents:
+        doc_id = store.add_document(name, meta.get("type", ""), meta.get("pages", 1), len(text))
+        store.add_chunks(doc_id, name, chunk_text(text))
+    s = store.stats()
+    print(f"✅ 元数据已写入 SQLite：{s['doc_count']} 个文档 / {s['chunk_count']} 个块")
+    store.close()
 
 
 # ============================================================
@@ -133,28 +152,46 @@ def main():
         print("📚 检测到已有知识库，直接加载...")
         collection = client.get_collection(COLLECTION_NAME, embedding_function=ef)
     else:
-        print("📚 首次运行，正在建库...")
+        print("📚 正在建库...")
         documents = load_documents()
         print(f"   读取到 {len(documents)} 个文档")
         collection = build_collection(documents)
+        save_metadata(documents)        # 同步写入 SQLite 元数据
 
     engine = QAEngine(collection)      # 混合检索 + 生成，统一由 qa_core 提供
 
-    print("✅ 知识库就绪（混合检索模式），开始问答（输入 exit 退出）\n")
+    # ---- 是否启用 Agent 模式（--agent）----
+    use_agent = "--agent" in sys.argv
+    agent = None
+    if use_agent:
+        from agent_core import Agent
+        from doc_store import DocStore
+
+        agent = Agent(engine, DocStore())
+        print("✅ 知识库就绪（Agent 模式：模型可调用工具）")
+        print(f"   可用工具：{', '.join(agent.tools)}")
+    else:
+        print("✅ 知识库就绪（混合检索模式）")
+    print("   输入 exit 退出\n")
+
     while True:
         q = input("问题: ").strip()
         if q in ("exit", "退出", "quit"):
             break
         if not q:
             continue
+
         try:
-            answer, sources = query(q, engine)
+            if agent is not None:
+                print(f"助手: {agent.run(q)}\n")
+            else:
+                answer, sources = query(q, engine)
+                print(f"回答: {answer}\n")
+                print(f"来源:{','.join(sources)}\n")
         except ModelServiceError as e:
             # 模型服务挂了不能让整个程序退出，提示后继续等下一个问题
             print(f"⚠️  {e}\n")
             continue
-        print(f"回答: {answer}\n")
-        print(f"来源:{','.join(sources)}\n")
 
 
 if __name__ == "__main__":
