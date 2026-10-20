@@ -15,18 +15,23 @@
 import os
 import sys
 import glob
+import logging
 import chromadb
 from chromadb.utils import embedding_functions
 
+import config
 import doc_loader          # 文档加载与清洗模块（支持 txt / md / pdf）
+from doc_store import DocStore                    # SQLite 业务元数据 + 问答历史
 from qa_core import QAEngine, ModelServiceError   # 公共问答核心（混合检索 + 生成）
 
-# ---------- 配置 ----------
-KNOWLEDGE_DIR = os.path.join(os.path.dirname(__file__), "knowledge")  # 文档目录
-CHROMA_DIR = os.path.join(os.path.dirname(__file__), "chroma_db")      # 向量库存储位置
-CHUNK_SIZE = 100        # 每块多少字
-COLLECTION_NAME = "knowledge"
-EMBED_MODEL = "bge-m3"  # 嵌入模型
+# ---------- 配置（全部来自 config.py，支持 .env 覆盖）----------
+KNOWLEDGE_DIR = config.KNOWLEDGE_DIR   # 文档目录
+CHROMA_DIR = config.CHROMA_DIR         # 向量库存储位置
+CHUNK_SIZE = config.CHUNK_SIZE         # 每块多少字
+COLLECTION_NAME = config.COLLECTION_NAME
+EMBED_MODEL = config.EMBED_MODEL       # 嵌入模型
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -74,7 +79,7 @@ def chunk_text(text, chunk_size=CHUNK_SIZE):
 # ============================================================
 def build_collection(documents):
     ef = embedding_functions.OllamaEmbeddingFunction(
-        url="http://localhost:11434/api/embeddings",
+        url=config.EMBED_URL,
         model_name=EMBED_MODEL,
     )
     client = chromadb.PersistentClient(path=CHROMA_DIR)
@@ -111,8 +116,6 @@ def save_metadata(documents):
       向量库（Chroma）→ 语义检索
       SQLite          → 业务元数据（文档列表、块数、统计）
     """
-    from doc_store import DocStore
-
     store = DocStore()
     store.reset()                      # 重建时先清空，避免残留旧文档
     for name, text, meta in documents:
@@ -137,13 +140,21 @@ def query(question, engine):
 # 主程序
 # ============================================================
 def main():
+    # 日志：一行一条，用于事后排查（问了什么、检索多久、总计多久）
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    logger.info("生效配置：%s", config.describe())
+
     # 检查库是否已存在（--rebuild 强制重建）
     force_rebuild = "--rebuild" in sys.argv
     db_exists = (not force_rebuild) and os.path.exists(CHROMA_DIR) and os.path.exists(
         os.path.join(CHROMA_DIR, "chroma.sqlite3"))
 
     ef = embedding_functions.OllamaEmbeddingFunction(
-        url="http://localhost:11434/api/embeddings",
+        url=config.EMBED_URL,
         model_name=EMBED_MODEL,
     )
     client = chromadb.PersistentClient(path=CHROMA_DIR)
@@ -158,16 +169,17 @@ def main():
         collection = build_collection(documents)
         save_metadata(documents)        # 同步写入 SQLite 元数据
 
-    engine = QAEngine(collection)      # 混合检索 + 生成，统一由 qa_core 提供
+    # SQLite 连接全进程共用一份：业务元数据 + 问答历史都写这里
+    store = DocStore()
+    engine = QAEngine(collection, store=store)   # 混合检索 + 生成 + 记录问答历史
 
     # ---- 是否启用 Agent 模式（--agent）----
     use_agent = "--agent" in sys.argv
     agent = None
     if use_agent:
         from agent_core import Agent
-        from doc_store import DocStore
 
-        agent = Agent(engine, DocStore())
+        agent = Agent(engine, store)
         print("✅ 知识库就绪（Agent 模式：模型可调用工具）")
         print(f"   可用工具：{', '.join(agent.tools)}")
     else:

@@ -13,22 +13,26 @@
 命中率优于纯向量检索（见 README 的评测章节）。
 """
 
-import os
+import logging
 import re
+import time
 
 import requests
 
+import config
 from hybrid_retriever import HybridRetriever
 
 # ---------- 配置 ----------
-CHAT_MODEL = "qwen2.5:3b"
-# 模型服务地址：用环境变量可覆盖（部署时容器里要指向宿主机，例如
-#   OLLAMA_URL=http://host.docker.internal:11434/api/chat ）
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
-REQUEST_TIMEOUT = 120     # 秒。没有超时的话，模型卡住会把请求永久挂起
-MAX_DISTANCE = 0.5        # 相似度阈值（向量路粗过滤）
-TOP_K = 3                 # 最终返回的片段数
+# 全部集中在 config.py，支持 .env 覆盖（模型名 / 阈值 / 超时 / 路径）。
+# 这里保留同名别名，是为了让原来 `from qa_core import OLLAMA_URL` 的地方不用改。
+CHAT_MODEL = config.CHAT_MODEL
+OLLAMA_URL = config.OLLAMA_URL
+REQUEST_TIMEOUT = config.REQUEST_TIMEOUT
+MAX_DISTANCE = config.MAX_DISTANCE
+TOP_K = config.TOP_K
 NO_INFO_ANSWER = "知识库中没有找到相关信息。"
+
+logger = logging.getLogger(__name__)
 
 
 class ModelServiceError(Exception):
@@ -62,12 +66,15 @@ def ask(prompt, temperature=0.0):
             "options": {"temperature": temperature},
         }, timeout=REQUEST_TIMEOUT)
     except requests.exceptions.Timeout:
+        logger.warning("模型服务响应超时（>%ss）：%s", REQUEST_TIMEOUT, OLLAMA_URL)
         raise ModelServiceError(f"模型服务响应超时（超过 {REQUEST_TIMEOUT} 秒）")
     except requests.exceptions.ConnectionError:
+        logger.warning("无法连接模型服务：%s", OLLAMA_URL)
         raise ModelServiceError("无法连接模型服务，请确认 Ollama 已启动")
 
     # 状态码检查：不做的话，出错时会抛一个看不懂的 JSON 解析异常
     if resp.status_code != 200:
+        logger.warning("模型服务返回错误状态 %s：%s", resp.status_code, resp.text[:200])
         raise ModelServiceError(
             f"模型服务返回错误状态 {resp.status_code}：{resp.text[:200]}")
 
@@ -94,27 +101,65 @@ def is_no_info_answer(answer):
 
 
 class QAEngine:
-    """RAG 问答引擎：混合检索 + 生成回答"""
+    """RAG 问答引擎：混合检索 + 生成回答
 
-    def __init__(self, collection, max_distance=MAX_DISTANCE, top_k=TOP_K):
+    store 是可选的 DocStore：传进来就会把每次问答记到 SQLite 的 query_log 表
+    （提问 / 耗时 / 命中来源 / 是否拒答）。这份历史是"收集 bad case →
+    改进检索 → 用评测集验证"这个闭环的入口，出问题能回放，而不是靠回忆。
+    """
+
+    def __init__(self, collection, max_distance=MAX_DISTANCE, top_k=TOP_K, store=None):
         self.retriever = HybridRetriever(collection, max_distance=max_distance)
         self.top_k = top_k
+        self.store = store
 
     def answer(self, question):
         """返回 {"question": ..., "answer": ..., "sources": [...]}"""
+        started = time.perf_counter()
+
         hits = self.retriever.search(question, k=self.top_k)
+        retrieval_ms = int((time.perf_counter() - started) * 1000)
 
         # 检索为空（两路都没强信号）→ 直接拒答，不调用模型
         if not hits:
-            return {"question": question, "answer": NO_INFO_ANSWER, "sources": []}
+            result = {"question": question, "answer": NO_INFO_ANSWER, "sources": []}
+            self._record(question, result, 0, retrieval_ms, started, refused=True)
+            return result
 
         context = "\n".join(f"[来自{src}]\n{chunk}" for chunk, src, _ in hits)
         answer = ask(build_prompt(context, question))
-        
+
         # 模型基于材料判断"材料里没有"时，来源要同步清空，避免输出自相矛盾
         # （回答"知识库中没有找到"却列着两个来源，用户会误解）
         if is_no_info_answer(answer):
-            return {"question": question, "answer": answer, "sources": []}
-        sources = list(dict.fromkeys(src for _, src, _ in hits))   # 保序去重
+            result = {"question": question, "answer": answer, "sources": []}
+            self._record(question, result, len(hits), retrieval_ms, started, refused=True)
+            return result
 
-        return {"question": question, "answer": answer, "sources": sources}
+        sources = list(dict.fromkeys(src for _, src, _ in hits))   # 保序去重
+        result = {"question": question, "answer": answer, "sources": sources}
+        self._record(question, result, len(hits), retrieval_ms, started, refused=False)
+        return result
+
+    # ---------------- 内部：记录一条问答历史 ----------------
+    def _record(self, question, result, hit_count, retrieval_ms, started, refused):
+        total_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "问答完成 | 检索=%dms 总计=%dms 命中=%d 拒答=%s | %s",
+            retrieval_ms, total_ms, hit_count, refused, question[:40],
+        )
+        if self.store is None:
+            return
+        try:
+            self.store.log_query(
+                question=question,
+                answer=result["answer"],
+                sources=result["sources"],
+                hit_count=hit_count,
+                retrieval_ms=retrieval_ms,
+                total_ms=total_ms,
+                refused=refused,
+            )
+        except Exception as exc:
+            # 记历史失败绝不能影响正常回答（日志是旁路，不是主链路）
+            logger.warning("写入问答历史失败：%s", exc)

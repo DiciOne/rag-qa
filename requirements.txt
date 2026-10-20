@@ -6,3 +6,7 @@ uvicorn
 pypdf
 jieba
 rank_bm25
+python-dotenv
+
+# --- 开发/测试 ---
+pytest

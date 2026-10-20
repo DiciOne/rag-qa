@@ -9,29 +9,39 @@ RAG 知识库问答系统 - FastAPI 接口版
      或 GET  http://localhost:8000/ask?question=什么是RAG
 """
 
-import os
+import logging
+
 import chromadb
 from chromadb.utils import embedding_functions
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+import config
+from doc_store import DocStore
 from qa_core import QAEngine, ModelServiceError   # 公共问答核心（混合检索 + 生成）
 
-# ---------- 配置 ----------
-BASE_DIR = os.path.dirname(__file__)
-CHROMA_DIR = os.path.join(BASE_DIR, "chroma_db")
-COLLECTION_NAME = "knowledge"
-EMBED_MODEL = "bge-m3"
+# ---------- 配置（全部来自 config.py，支持 .env 覆盖）----------
+CHROMA_DIR = config.CHROMA_DIR
+COLLECTION_NAME = config.COLLECTION_NAME
+EMBED_MODEL = config.EMBED_MODEL
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 # ---------- 启动时加载知识库 ----------
 ef = embedding_functions.OllamaEmbeddingFunction(
-    url="http://localhost:11434/api/embeddings",
+    url=config.EMBED_URL,
     model_name=EMBED_MODEL,
 )
 client = chromadb.PersistentClient(path=CHROMA_DIR)
 collection = client.get_collection(COLLECTION_NAME, embedding_function=ef)
-engine = QAEngine(collection)
+engine = QAEngine(collection, store=DocStore())   # 接口请求也会写进 query_log
+logger.info("知识库加载完成 | %s", config.describe())
 print("✅ 知识库加载完成（混合检索模式）")
 
 # ---------- FastAPI 应用 ----------
@@ -67,3 +77,18 @@ def ask_get(question: str):
 def ask_post(req: AskRequest):
     """POST 方式提问：body 里传 {"question": "问题"}"""
     return engine.answer(req.question)
+
+
+@app.get("/stats")
+def stats():
+    """知识库统计 + 问答历史统计（总次数 / 拒答率 / 平均耗时）"""
+    return {
+        "knowledge_base": engine.store.stats(),
+        "queries": engine.store.query_stats(),
+    }
+
+
+@app.get("/history")
+def history(limit: int = 10):
+    """最近的问答记录 —— 排查"刚才那个问题为什么答错"时直接用"""
+    return {"items": engine.store.recent_queries(limit)}

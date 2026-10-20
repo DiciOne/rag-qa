@@ -16,11 +16,14 @@
 import jieba
 from rank_bm25 import BM25Okapi
 
+import config
+
 
 class HybridRetriever:
-    def __init__(self, collection, max_distance=0.5):
+    def __init__(self, collection, max_distance=None):
         self.collection = collection
-        self.max_distance = max_distance
+        # 阈值默认取 config（可在 .env 覆盖）；显式传参时以传参为准
+        self.max_distance = config.MAX_DISTANCE if max_distance is None else max_distance
 
         # 取出库里所有块，用于构建 BM25 索引
         data = collection.get(include=["documents", "metadatas"])

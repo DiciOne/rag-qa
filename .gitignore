@@ -4,9 +4,17 @@ chroma_db/
 # 忽略 SQLite 数据库文件（运行时生成）
 *.db
 
+# 本地配置（每台机器可能不同：模型地址、阈值、端口）。
+# 提交的是 .env.example，别人 clone 后复制一份再改。
+.env
+
 # Python 缓存
 __pycache__/
 *.pyc
+
+# pytest 缓存 / 临时目录
+.pytest_cache/
+pytest-cache-files-*/
 
 # VS Code
 .vscode/

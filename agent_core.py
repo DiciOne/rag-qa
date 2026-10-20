@@ -17,12 +17,16 @@ Agent 核心：把项目已有能力包装成工具，让模型自己决定调�
 """
 
 import json
+import logging
 import re
 
+import config
 from qa_core import ask, ModelServiceError
 
-CHAT_MODEL = "qwen2.5:3b"
-MAX_STEPS = 4          # 最多循环几步（防止无限调工具）
+# 最多循环几步（防止无限调工具）—— 可在 .env 里用 MAX_STEPS 覆盖
+MAX_STEPS = config.MAX_STEPS
+
+logger = logging.getLogger(__name__)
 
 
 def parse_json(text):
@@ -89,7 +93,7 @@ class Agent:
     # ---------------- 具体工具实现 ----------------
     def _search_manual(self, query):
         """检索知识库：只返回原文片段，不做生成"""
-        hits = self.engine.retriever.search(query, k=3)
+        hits = self.engine.retriever.search(query, k=config.TOP_K)
         if not hits:
             return {"结果": "知识库中未找到相关内容"}
         return {

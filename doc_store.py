@@ -12,10 +12,12 @@
 """
 
 import datetime
-import os
+import json
 import sqlite3
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rag_meta.db")
+import config
+
+DB_PATH = config.DB_PATH
 
 
 class DocStore:
@@ -42,6 +44,19 @@ class DocStore:
                 source   TEXT,
                 content  TEXT,
                 FOREIGN KEY (doc_id) REFERENCES documents(id)
+            );
+            -- 每次问答的审计记录：出问题时能回放「用户问了什么、检索到什么、
+            -- 模型答了什么、耗时多久、有没有拒答」，也是收集 bad case 的入口。
+            CREATE TABLE IF NOT EXISTS query_log (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                question     TEXT NOT NULL,
+                answer       TEXT,
+                sources      TEXT,      -- JSON 数组字符串
+                hit_count    INTEGER,   -- 召回片段数
+                retrieval_ms INTEGER,   -- 检索耗时（毫秒）
+                total_ms     INTEGER,   -- 端到端耗时（毫秒）
+                refused      INTEGER,   -- 1 = 拒答（来源被清空）
+                created_at   TEXT
             );
         """)
         self.conn.commit()
@@ -72,7 +87,11 @@ class DocStore:
     # 查询部分（★ 你来写 ★）
     # ============================================================
     def reset(self):
-        """清空所有数据（重建知识库时调用，避免残留旧数据）"""
+        """清空文档与块（重建知识库时调用，避免残留旧数据）
+
+        注意：**故意不清 query_log**。问答历史是跨重建累积的资产
+        （重建知识库前后的问题表现可以对比），清掉就丢了。
+        """
         self.conn.execute("DELETE FROM chunks")
         self.conn.execute("DELETE FROM documents")
         self.conn.commit()
@@ -127,7 +146,76 @@ class DocStore:
 
         self.conn.commit()
         return (doc_rows , chunk_rows)
-    
+
+    # ============================================================
+    # 问答历史（query_log）：记录每次提问，用于回放与 bad case 分析
+    # ============================================================
+    def log_query(self, question, answer, sources, hit_count,
+                  retrieval_ms, total_ms, refused):
+        """记一条问答记录。
+
+        为什么值得单独存：这几列刚好对应排查一次"答得不对"需要的全部信息 ——
+        用户原话（question）、检索命中了几个片段（hit_count）、
+        来源是谁（sources）、慢在哪（retrieval_ms vs total_ms）、
+        以及是模型拒答还是检索没找到（refused）。
+        """
+        self.conn.execute(
+            "INSERT INTO query_log "
+            "(question, answer, sources, hit_count, retrieval_ms, total_ms, refused, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                question,
+                answer,
+                json.dumps(sources, ensure_ascii=False),   # 列表存成 JSON 字符串
+                hit_count,
+                retrieval_ms,
+                total_ms,
+                1 if refused else 0,
+                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        self.conn.commit()
+
+    def recent_queries(self, limit=20):
+        """最近的问答记录（时间倒序），sources 已解析回列表"""
+        rows = self.conn.execute(
+            "SELECT question, answer, sources, hit_count, retrieval_ms, total_ms, "
+            "refused, created_at FROM query_log ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["sources"] = json.loads(item["sources"] or "[]")
+            except (TypeError, ValueError):
+                item["sources"] = []
+            result.append(item)
+        return result
+
+    def query_stats(self):
+        """问答历史统计：总次数 / 拒答率 / 平均耗时
+
+        拒答率是 RAG 系统的核心指标之一 —— 拒答太多说明检索或阈值有问题，
+        拒答太少说明在硬答。这个数字能直接从历史里算出来，不用另做评测。
+        """
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS total, "
+            "       AVG(total_ms) AS avg_total_ms, "
+            "       SUM(refused) AS refused_count "
+            "FROM query_log"
+        ).fetchone()
+
+        total = row["total"] or 0
+        refused = row["refused_count"] or 0
+        return {
+            "total": total,
+            "refused": refused,
+            "refusal_rate": round(refused / total, 2) if total else 0.0,
+            "avg_total_ms": int(row["avg_total_ms"] or 0),
+        }
+
     def close(self):
         self.conn.close()
 
