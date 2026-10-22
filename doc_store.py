@@ -14,6 +14,7 @@
 import datetime
 import json
 import sqlite3
+import threading
 
 import config
 
@@ -21,9 +22,30 @@ DB_PATH = config.DB_PATH
 
 
 class DocStore:
+    """SQLite 业务元数据 + 问答历史
+
+    ★ 为什么需要 check_same_thread=False + 一把锁
+    ------------------------------------------------------------
+    sqlite3 的连接默认**绑定创建它的线程**。命令行模式下没问题（单线程），
+    但接进 FastAPI 之后：路由函数是同步的，会被丢到线程池里执行 ——
+    于是每次请求都在一个新线程里碰同一个连接，直接抛：
+
+        sqlite3.ProgrammingError: SQLite objects created in a thread
+        can only be used in that same thread
+
+    表现很阴险：
+      - /stats、/history 直接 500
+      - query_log 写入**全部失败**，但因为上层包了 try/except，
+        只打一行 WARNING 就被吞掉了 —— 看日志不看关键字根本发现不了
+
+    修法：连接开 check_same_thread=False，并用一把锁串行化访问
+    （SQLite 的连接不是线程安全的；本项目并发很低，一把全局锁足够）。
+    """
+
     def __init__(self, db_path=DB_PATH):
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row      # 让查询结果能按列名取值
+        self._lock = threading.Lock()
         self._init_schema()
 
     def _init_schema(self):
@@ -158,23 +180,27 @@ class DocStore:
         用户原话（question）、检索命中了几个片段（hit_count）、
         来源是谁（sources）、慢在哪（retrieval_ms vs total_ms）、
         以及是模型拒答还是检索没找到（refused）。
+
+        写入要串行化 —— 多个请求线程同时 commit 同一个连接会互相干扰
+        （Python 的 sqlite3 文档要求：check_same_thread=False 时写操作由使用者加锁）。
         """
-        self.conn.execute(
-            "INSERT INTO query_log "
-            "(question, answer, sources, hit_count, retrieval_ms, total_ms, refused, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (
-                question,
-                answer,
-                json.dumps(sources, ensure_ascii=False),   # 列表存成 JSON 字符串
-                hit_count,
-                retrieval_ms,
-                total_ms,
-                1 if refused else 0,
-                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            ),
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO query_log "
+                "(question, answer, sources, hit_count, retrieval_ms, total_ms, refused, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    question,
+                    answer,
+                    json.dumps(sources, ensure_ascii=False),   # 列表存成 JSON 字符串
+                    hit_count,
+                    retrieval_ms,
+                    total_ms,
+                    1 if refused else 0,
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+            self.conn.commit()
 
     def recent_queries(self, limit=20):
         """最近的问答记录（时间倒序），sources 已解析回列表"""
