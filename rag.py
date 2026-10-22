@@ -148,7 +148,18 @@ def build_collection(documents):
         client.delete_collection(COLLECTION_NAME)
     except Exception:
         pass
-    collection = client.create_collection(COLLECTION_NAME, embedding_function=ef)
+    # 显式设 HNSW 参数：默认的 search_ef 太小，11k 规模上会把真近邻漏掉
+    # （实测必须把 n_results 提到 1000 才找得到，说明是搜索广度不够）。
+    collection = client.create_collection(
+        COLLECTION_NAME,
+        embedding_function=ef,
+        metadata={
+            "hnsw:space": config.HNSW_SPACE,
+            "hnsw:search_ef": config.HNSW_SEARCH_EF,
+            "hnsw:construction_ef": config.HNSW_CONSTRUCTION_EF,
+            "hnsw:M": config.HNSW_M,
+        },
+    )
 
     add_batch = config.CHROMA_ADD_BATCH_SIZE
     print(f"   💾 分批写入向量库（每批 {add_batch} 块）...")

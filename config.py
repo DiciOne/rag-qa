@@ -98,6 +98,17 @@ EMBED_BATCH_SIZE = _get_int("EMBED_BATCH_SIZE", 64)
 # 超过会直接报错。2000 留出余量。
 CHROMA_ADD_BATCH_SIZE = _get_int("CHROMA_ADD_BATCH_SIZE", 2000)
 
+# ---------- HNSW 索引参数（Chroma 默认值在大库上召回严重不足）----------
+# ★ 踩过的坑：库从 2822 块涨到 11048 块后，"RAG 是什么"的检索结果突然变差。
+#   暴力全量精确检索显示真正的最近邻 dist=0.3844（1-cos），但 Chroma 只返回
+#   0.6499 —— 而且把 n_results 加到 200 也找不到，必须加到 1000 才能命中。
+#   这不是"小文档被淹没"，是**近似检索的搜索候选池太小，真近邻埋在图深处探不到**。
+#   修法：显式设置 HNSW 参数（search_ef 决定搜索广度，construction_ef 决定建图质量）。
+HNSW_SPACE = _get("HNSW_SPACE", "cosine")      # 实测返回的 distance 就是 1-cos
+HNSW_SEARCH_EF = _get_int("HNSW_SEARCH_EF", 500)          # 搜索候选池，默认 100 太小
+HNSW_CONSTRUCTION_EF = _get_int("HNSW_CONSTRUCTION_EF", 400)  # 建图时候选池
+HNSW_M = _get_int("HNSW_M", 32)                            # 每个节点的连接数
+
 # ============================================================
 # Agent
 # ============================================================
