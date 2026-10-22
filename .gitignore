@@ -21,5 +21,8 @@ pytest-cache-files-*/
 knowledge/*系统手册_西门子.pdf
 knowledge/台达*.pdf
 
+# embedding 缓存（几十 MB，用于跳过重复计算，不进仓库）
+embeddings_cache.npz
+
 # VS Code
 .vscode/

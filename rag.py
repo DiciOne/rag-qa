@@ -18,6 +18,7 @@ import glob
 import logging
 import time
 import chromadb
+import numpy as np
 from chromadb.utils import embedding_functions
 
 import config
@@ -115,23 +116,33 @@ def build_collection(documents):
         print("⚠️  没有可入库的内容")
         return None
 
-    # ---------- 2. 分批算 embedding（失败时旧库不受影响）----------
+    # ---------- 2. 算 embedding（优先读缓存，失败时旧库不受影响）----------
     batch_size = config.EMBED_BATCH_SIZE
-    print(f"   🔢 共 {total} 块，分批嵌入（每批 {batch_size} 条）...")
-    all_embeddings = []
-    started = time.time()
-    for start in range(0, total, batch_size):
-        batch = all_chunks[start:start + batch_size]
-        all_embeddings.extend(ef(batch))
-        done = min(start + batch_size, total)
-        pct = done * 100 / total
-        elapsed = time.time() - started
-        eta = elapsed / done * (total - done) if done else 0
-        print(f"\r      进度 {done}/{total} ({pct:5.1f}%)  已用 {elapsed:5.0f}s  "
-              f"预计剩余 {eta:4.0f}s", end="", flush=True)
-    print()
+    all_embeddings = _load_embedding_cache(all_ids, total)
+    if all_embeddings is not None:
+        print(f"   ⚡ 命中 embedding 缓存，跳过计算（{total} 块）")
+    else:
+        print(f"   🔢 共 {total} 块，分批嵌入（每批 {batch_size} 条）...")
+        all_embeddings = []
+        started = time.time()
+        for start in range(0, total, batch_size):
+            batch = all_chunks[start:start + batch_size]
+            all_embeddings.extend(ef(batch))
+            done = min(start + batch_size, total)
+            pct = done * 100 / total
+            elapsed = time.time() - started
+            eta = elapsed / done * (total - done) if done else 0
+            print(f"\r      进度 {done}/{total} ({pct:5.1f}%)  已用 {elapsed:5.0f}s  "
+                  f"预计剩余 {eta:4.0f}s", end="", flush=True)
+        print()
+        _save_embedding_cache(all_ids, all_embeddings)
 
     # ---------- 3. 此时才删旧库并写入（纯写入，不会再碰模型）----------
+    #
+    # ★ 坑 3：Chroma 单次 add() 有批量上限（实测 5461 条）。
+    #   一口气写 11048 块会报 "Batch size ... is greater than max batch size"，
+    #   而旧库这时已经被删掉了 —— 又丢一次数据。
+    #   所以写入也要分批（CHROMA_ADD_BATCH_SIZE，默认 2000）。
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     try:
         client.delete_collection(COLLECTION_NAME)
@@ -139,15 +150,68 @@ def build_collection(documents):
         pass
     collection = client.create_collection(COLLECTION_NAME, embedding_function=ef)
 
-    collection.add(
-        documents=all_chunks,
-        embeddings=all_embeddings,
-        ids=all_ids,
-        metadatas=all_metas,
-    )
+    add_batch = config.CHROMA_ADD_BATCH_SIZE
+    print(f"   💾 分批写入向量库（每批 {add_batch} 块）...")
+    for start in range(0, total, add_batch):
+        end = min(start + add_batch, total)
+        collection.add(
+            documents=all_chunks[start:end],
+            embeddings=all_embeddings[start:end],
+            ids=all_ids[start:end],
+            metadatas=all_metas[start:end],
+        )
+        print(f"\r      已写入 {end}/{total}", end="", flush=True)
+    print()
 
-    print(f"✅ 建库完成，共存入 {collection.count()} 块")
+    got = collection.count()
+    if got != total:
+        raise RuntimeError(f"写入不完整：期望 {total} 块，实际 {got} 块")
+    print(f"✅ 建库完成，共存入 {got} 块")
     return collection
+
+
+# ============================================================
+# embedding 缓存
+# 算 11048 块的向量要 32 分钟。调试切块/清洗时反复重建，每次都重算是
+# 纯浪费。所以按 chunk id 做缓存：id 全一样就直接复用。
+# 缓存文件在 .gitignore 里（约 45 MB，不该进仓库）。
+# ============================================================
+def _cache_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "embeddings_cache.npz")
+
+
+def _load_embedding_cache(all_ids, total):
+    """命中则返回 embeddings 列表，否则 None"""
+    path = _cache_path()
+    if not os.path.exists(path):
+        return None
+    try:
+        data = np.load(path, allow_pickle=True)
+        cached_ids = list(data["ids"])
+        if cached_ids == list(all_ids):
+            emb = data["embeddings"]
+            if len(emb) == total:
+                print(f"   （缓存文件 {os.path.getsize(path) / 1024 / 1024:.0f} MB，"
+                      f"来自上次构建）")
+                return [row.tolist() for row in emb]
+        print("   （缓存已过期：切块结果变了，重新计算）")
+    except Exception as exc:
+        print(f"   （缓存读取失败，重新计算：{exc}）")
+    return None
+
+
+def _save_embedding_cache(all_ids, all_embeddings):
+    path = _cache_path()
+    try:
+        np.savez_compressed(
+            path,
+            ids=np.array(all_ids, dtype=object),
+            embeddings=np.array(all_embeddings, dtype=np.float32),
+        )
+        print(f"   💾 embedding 已缓存：{os.path.getsize(path) / 1024 / 1024:.0f} MB")
+    except Exception as exc:
+        print(f"   ⚠️ 缓存写入失败（不影响建库）：{exc}")
 
 
 def save_metadata(documents):

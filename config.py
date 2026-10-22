@@ -94,6 +94,10 @@ PDF_REPEAT_MIN_RATIO = _get_float("PDF_REPEAT_MIN_RATIO", 0.5)
 # （实测 2822 块的单请求直接 ReadTimeout）。64 是稳妥值。
 EMBED_BATCH_SIZE = _get_int("EMBED_BATCH_SIZE", 64)
 
+# 写入 Chroma 时每批多少块。Chroma 单次 add() 有硬上限（实测 5461 条），
+# 超过会直接报错。2000 留出余量。
+CHROMA_ADD_BATCH_SIZE = _get_int("CHROMA_ADD_BATCH_SIZE", 2000)
+
 # ============================================================
 # Agent
 # ============================================================
