@@ -18,18 +18,33 @@
 import chromadb
 from chromadb.utils import embedding_functions
 
-# ---------- 配置 ----------
-CHROMA_DIR = "chroma_db"
-COLLECTION_NAME = "knowledge"
-EMBED_MODEL = "bge-m3"
-MAX_DISTANCE = 0.5      # 相似度阈值
-K = 3                   # 取前 K 条
+import config
+
+# ---------- 配置（统一从 config 读，避免和主程序不一致）----------
+CHROMA_DIR = config.CHROMA_DIR
+COLLECTION_NAME = config.COLLECTION_NAME
+EMBED_MODEL = config.EMBED_MODEL
+MAX_DISTANCE = config.MAX_DISTANCE   # ★ 库变了必须重新标定，不要在这里写死
+K = config.TOP_K
 USE_HYBRID = True       # True = 混合检索（向量+BM25）；False = 纯向量（用于对比）
 USE_RERANK = False      # 实测：3B 模型做重排序反而让命中率从 1.00 降到 0.43，已弃用（见 README 实验记录）
 
-# ---------- 评测集 ----------
+# ============================================================
+# 评测集
+#
+# ★ 一条重要教训：断言不要死盯文件名
+# ------------------------------------------------------------
+# 原来每个 S7-1200 问题都只认 "S7-1200设备手册示例.pdf"。后来知识库
+# 加进了真的《S7-1200 系统手册》（329 页），同一批问题**从真手册里检索
+# 到了答案**，答案完全正确、来源更权威，但文件名对不上 —— Hit@3 从 1.00
+# 掉到 0.79，看起来像退步，其实是我的评测太脆。
+#
+# 修法：允许"命中任一可接受来源"。两本手册内容重叠，命中哪本都算对。
+# ============================================================
+S7_SOURCES = ("S7-1200设备手册示例.pdf", "S7-1200系统手册_西门子.pdf")
+
 EVAL_SET = [
-    # ---- 有答案的问题（source = 期望命中的文件）----
+    # ---- 有答案的问题（source = 期望命中的文件，可写成多个候选）----
     {"q": "列表推导式怎么写", "source": "python笔记.txt"},
     {"q": "字典怎么取值才不会报错", "source": "python笔记.txt"},
     {"q": "函数的默认参数怎么用", "source": "python笔记.txt"},
@@ -39,15 +54,17 @@ EVAL_SET = [
     {"q": "temperature 参数怎么用", "source": "大模型笔记.txt"},
     {"q": "Chroma 是干什么的", "source": "大模型笔记.txt"},
     {"q": "messages 和 message 有什么区别", "source": "大模型笔记.txt"},
-    {"q": "S7-1200 的工作电压是多少", "source": "S7-1200设备手册示例.pdf"},
-    {"q": "数字量输入有多少点", "source": "S7-1200设备手册示例.pdf"},
-    {"q": "IP 地址设置要注意什么", "source": "S7-1200设备手册示例.pdf"},
-    {"q": "RUN 指示灯闪烁怎么处理", "source": "S7-1200设备手册示例.pdf"},
-    {"q": "用什么软件进行设备组态", "source": "S7-1200设备手册示例.pdf"},
+    {"q": "S7-1200 的工作电压是多少", "source": S7_SOURCES},
+    {"q": "数字量输入有多少点", "source": S7_SOURCES},
+    {"q": "IP 地址设置要注意什么", "source": S7_SOURCES},
+    {"q": "RUN 指示灯闪烁怎么处理", "source": S7_SOURCES},
+    {"q": "用什么软件进行设备组态", "source": S7_SOURCES},
     # ---- 无答案的问题（source = None，期望检索结果为空）----
     {"q": "今天天气怎么样", "source": None},
     {"q": "公司食堂几点开门", "source": None},
     {"q": "怎么用 Excel 做数据透视表", "source": None},
+    {"q": "帮我写一首诗", "source": None},
+    {"q": "红烧肉怎么做", "source": None},
 ]
 
 
@@ -110,11 +127,14 @@ def evaluate(search_fn):
         actual_sources = list(dict.fromkeys(src for _, src, _ in relevant))
         top1_source = relevant[0][1] if relevant else None
         if i['source'] is not None:
-            total_with_answer +=1
-            if i['source'] in actual_sources:
+            total_with_answer += 1
+            # source 可以是一个文件名，也可以是多个候选（内容重叠的文档）
+            expected = i['source']
+            allowed = expected if isinstance(expected, (list, tuple)) else (expected,)
+            if any(s in actual_sources for s in allowed):
                 hit_count +=1
                 is_hit = True
-            if  top1_source == i['source']:
+            if top1_source in allowed:
                 top1_count +=1
         else:
             total_without_answer += 1
@@ -137,7 +157,7 @@ def evaluate(search_fn):
 # ============================================================
 if __name__ == "__main__":
     ef = embedding_functions.OllamaEmbeddingFunction(
-        url="http://localhost:11434/api/embeddings", model_name=EMBED_MODEL)
+        url=config.EMBED_URL, model_name=EMBED_MODEL)
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     col = client.get_collection(COLLECTION_NAME, embedding_function=ef)
 

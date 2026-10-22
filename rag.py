@@ -16,6 +16,7 @@ import os
 import sys
 import glob
 import logging
+import time
 import chromadb
 from chromadb.utils import embedding_functions
 
@@ -78,31 +79,71 @@ def chunk_text(text, chunk_size=CHUNK_SIZE):
 #   5. 打印存入多少块
 # ============================================================
 def build_collection(documents):
+    """建库：切块 → 分批嵌入 → 写入 Chroma
+
+    ★ 两个踩过的坑（都是在真实手册上炸出来的）
+    ------------------------------------------------------------
+    坑 1：一次性把全部块交给 collection.add()
+        少量文档时没问题。但上了 329 页的西门子手册（2822 块），
+        chroma 会把全部文本塞进**一个** embedding 请求，
+        单请求耗时 6 分钟以上，直接 httpcore.ReadTimeout 断掉。
+        → 修法：分批嵌入（EMBED_BATCH_SIZE），每批几十条，失败可重试。
+
+    坑 2：先 delete_collection 再建新的（非原子）
+        嵌入失败时，旧库已经被删光了 —— 数据丢失，而错误信息里
+        只写"超时"，完全看不出库已经空了。
+        → 修法：**先把 embedding 全部算完，再删旧库**。算的过程中
+          出错，旧库原样保留；算完了才动库，此时只是纯写入，很快。
+    """
     ef = embedding_functions.OllamaEmbeddingFunction(
         url=config.EMBED_URL,
         model_name=EMBED_MODEL,
     )
+
+    # ---------- 1. 切块 ----------
+    all_chunks, all_ids, all_metas = [], [], []
+    for doc_idx, (filename, content, _meta) in enumerate(documents):
+        chunks = chunk_text(content)
+        print(f"   ✂️  {filename} → {len(chunks)} 块")
+        for chunk_idx, chunk in enumerate(chunks):
+            all_chunks.append(chunk)
+            all_ids.append(f"doc_{doc_idx}_{chunk_idx}")
+            all_metas.append({"source": filename})
+
+    total = len(all_chunks)
+    if total == 0:
+        print("⚠️  没有可入库的内容")
+        return None
+
+    # ---------- 2. 分批算 embedding（失败时旧库不受影响）----------
+    batch_size = config.EMBED_BATCH_SIZE
+    print(f"   🔢 共 {total} 块，分批嵌入（每批 {batch_size} 条）...")
+    all_embeddings = []
+    started = time.time()
+    for start in range(0, total, batch_size):
+        batch = all_chunks[start:start + batch_size]
+        all_embeddings.extend(ef(batch))
+        done = min(start + batch_size, total)
+        pct = done * 100 / total
+        elapsed = time.time() - started
+        eta = elapsed / done * (total - done) if done else 0
+        print(f"\r      进度 {done}/{total} ({pct:5.1f}%)  已用 {elapsed:5.0f}s  "
+              f"预计剩余 {eta:4.0f}s", end="", flush=True)
+    print()
+
+    # ---------- 3. 此时才删旧库并写入（纯写入，不会再碰模型）----------
     client = chromadb.PersistentClient(path=CHROMA_DIR)
-    # 删除旧的（如果存在）
     try:
         client.delete_collection(COLLECTION_NAME)
     except Exception:
         pass
     collection = client.create_collection(COLLECTION_NAME, embedding_function=ef)
 
-    all_chunks = []
-    all_ids = []
-    all_metas = []
-    for doc_idx , (filename , content , _meta) in enumerate(documents):
-        chunks = chunk_text(content)
-        for chunk_idx , chunk in enumerate(chunks):
-            all_chunks.append(chunk)
-            all_ids.append(f"doc_{doc_idx}_{chunk_idx}")
-            all_metas.append({"source":filename})
     collection.add(
         documents=all_chunks,
+        embeddings=all_embeddings,
         ids=all_ids,
-        metadatas=all_metas
+        metadatas=all_metas,
     )
 
     print(f"✅ 建库完成，共存入 {collection.count()} 块")

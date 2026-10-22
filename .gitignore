@@ -16,5 +16,10 @@ __pycache__/
 .pytest_cache/
 pytest-cache-files-*/
 
+# 第三方厂商手册（版权归厂家，不放进公开仓库；下载地址见 README「数据说明」）。
+# 自建的 S7-1200设备手册示例.pdf 保留在仓库里，它是评测基线用的受控数据。
+knowledge/*系统手册_西门子.pdf
+knowledge/台达*.pdf
+
 # VS Code
 .vscode/
